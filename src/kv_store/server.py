@@ -2,18 +2,14 @@
 
 import socket
 import threading
-import logging
 from typing import Optional
 
 from src.kv_store.store import KVStore
 from src.kv_store.protocol import Message, Response
+from src.kv_store.logging_util import setup_logger, get_timestamped_logfile
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+logger = None  # Will be initialized when server starts
 
 
 class KVStoreServer:
@@ -28,6 +24,11 @@ class KVStoreServer:
     
     def start(self) -> None:
         """Start the server and listen for connections."""
+        global logger
+        
+        # Initialize logger with timestamped filename when server starts
+        logger = setup_logger(__name__, log_filename=get_timestamped_logfile("server"))
+        
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
