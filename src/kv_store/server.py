@@ -1,0 +1,141 @@
+"""Socket-based KV store server."""
+
+import socket
+import threading
+import logging
+from typing import Optional
+
+from src.kv_store.store import KVStore
+from src.kv_store.protocol import Message, Response
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+class KVStoreServer:
+    """TCP socket-based key-value store server."""
+    
+    def __init__(self, host: str = "localhost", port: int = 5000):
+        self.host = host
+        self.port = port
+        self.store = KVStore()
+        self.socket: Optional[socket.socket] = None
+        self.running = False
+    
+    def start(self) -> None:
+        """Start the server and listen for connections."""
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
+        try:
+            self.socket.bind((self.host, self.port))
+            self.socket.listen(5)
+            self.running = True
+            logger.info(f"KV Store server listening on {self.host}:{self.port}")
+            
+            while self.running:
+                try:
+                    client_socket, client_addr = self.socket.accept()
+                    logger.info(f"Client connected from {client_addr}")
+                    
+                    # Handle each client in a separate thread
+                    client_thread = threading.Thread(
+                        target=self._handle_client,
+                        args=(client_socket, client_addr),
+                        daemon=True
+                    )
+                    client_thread.start()
+                    
+                except KeyboardInterrupt:
+                    logger.info("Server shutdown requested")
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Server error: {e}")
+        finally:
+            self.stop()
+    
+    def _handle_client(self, client_socket: socket.socket, client_addr: tuple) -> None:
+        """Handle a single client connection."""
+        try:
+            while self.running:
+                # Receive message length first (4 bytes)
+                length_bytes = client_socket.recv(4)
+                if not length_bytes:
+                    break
+                
+                message_length = int.from_bytes(length_bytes, byteorder='big')
+                
+                # Receive the actual message
+                message_data = b''
+                while len(message_data) < message_length:
+                    chunk = client_socket.recv(min(4096, message_length - len(message_data)))
+                    if not chunk:
+                        break
+                    message_data += chunk
+                
+                if not message_data:
+                    break
+                
+                # Parse and process the message
+                try:
+                    message = Message.from_bytes(message_data)
+                    response = self._process_message(message)
+                except Exception as e:
+                    logger.error(f"Error processing message: {e}")
+                    response = Response(success=False, error=str(e))
+                
+                # Send response
+                response_bytes = response.to_bytes()
+                response_length = len(response_bytes).to_bytes(4, byteorder='big')
+                client_socket.send(response_length + response_bytes)
+                
+        except Exception as e:
+            logger.error(f"Client handler error: {e}")
+        finally:
+            client_socket.close()
+            logger.info(f"Client disconnected: {client_addr}")
+    
+    def _process_message(self, message: Message) -> Response:
+        """Process a message and return response."""
+        operation = message.operation.lower()
+        
+        if operation == "get":
+            value = self.store.get(message.key)
+            if value is not None:
+                return Response(success=True, data=value)
+            else:
+                return Response(success=False, error=f"Key '{message.key}' not found")
+        
+        elif operation == "set":
+            if message.value is None:
+                return Response(success=False, error="Value is required for SET operation")
+            self.store.set(message.key, message.value)
+            return Response(success=True, data=f"Set '{message.key}' = {message.value}")
+        
+        else:
+            return Response(success=False, error=f"Unknown operation: {operation}")
+    
+    def stop(self) -> None:
+        """Stop the server."""
+        self.running = False
+        if self.socket:
+            self.socket.close()
+        logger.info("Server stopped")
+
+
+def main():
+    """Run the KV store server."""
+    server = KVStoreServer(host="localhost", port=5000)
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+
+
+if __name__ == "__main__":
+    main()
