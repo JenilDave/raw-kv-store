@@ -15,10 +15,10 @@ logger = None  # Will be initialized when server starts
 class KVStoreServer:
     """TCP socket-based key-value store server."""
     
-    def __init__(self, host: str = "localhost", port: int = 5000):
+    def __init__(self, host: str = "localhost", port: int = 5000, storage_file: str = "data/kv_store.jsonl"):
         self.host = host
         self.port = port
-        self.store = KVStore()
+        self.store = KVStore(storage_file=storage_file)
         self.socket: Optional[socket.socket] = None
         self.running = False
     
@@ -35,6 +35,7 @@ class KVStoreServer:
         try:
             self.socket.bind((self.host, self.port))
             self.socket.listen(5)
+            self.socket.settimeout(1.0)  # Allow Ctrl+C to interrupt accept()
             self.running = True
             logger.info(f"KV Store server listening on {self.host}:{self.port}")
             
@@ -51,6 +52,9 @@ class KVStoreServer:
                     )
                     client_thread.start()
                     
+                except socket.timeout:
+                    # Timeout is normal, just continue the loop
+                    continue
                 except KeyboardInterrupt:
                     logger.info("Server shutdown requested")
                     break
@@ -118,6 +122,13 @@ class KVStoreServer:
             self.store.set(message.key, message.value)
             return Response(success=True, data=f"Set '{message.key}' = {message.value}")
         
+        elif operation == "delete":
+            deleted = self.store.delete(message.key)
+            if deleted:
+                return Response(success=True, data=f"Deleted key '{message.key}'")
+            else:
+                return Response(success=False, error=f"Key '{message.key}' not found")
+        
         else:
             return Response(success=False, error=f"Unknown operation: {operation}")
     
@@ -131,7 +142,7 @@ class KVStoreServer:
 
 def main():
     """Run the KV store server."""
-    server = KVStoreServer(host="localhost", port=5000)
+    server = KVStoreServer(host="localhost", port=5000, storage_file="data/kv_store.jsonl")
     try:
         server.start()
     except KeyboardInterrupt:
