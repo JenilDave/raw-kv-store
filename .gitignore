@@ -6,8 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
-# Project logs
+# Project logs and data
 logs/
+data/
 
 # Distribution / packaging
 .Python
