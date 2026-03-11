@@ -1,7 +1,8 @@
 """Message protocol for KV store communication."""
 
 import msgpack
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from typing import Any, Dict
 
 
@@ -11,6 +12,7 @@ class Message:
     operation: str
     key: str
     value: Any = None
+    request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     
     def to_bytes(self) -> bytes:
         """Serialize message to bytes."""
@@ -18,6 +20,7 @@ class Message:
             "operation": self.operation,
             "key": self.key,
             "value": self.value,
+            "request_id": self.request_id,
         }
         return msgpack.packb(data)
     
@@ -29,6 +32,7 @@ class Message:
             operation=decoded["operation"],
             key=decoded["key"],
             value=decoded.get("value"),
+            request_id=decoded.get("request_id", str(uuid.uuid4())),
         )
 
 

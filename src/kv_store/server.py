@@ -119,13 +119,15 @@ class KVStoreServer:
         elif operation == "set":
             if message.value is None:
                 return Response(success=False, error="Value is required for SET operation")
-            self.store.set(message.key, message.value)
-            return Response(success=True, data=f"Set '{message.key}' = {message.value}")
+            result = self.store.set(message.key, message.value, request_id=message.request_id)
+            status = "SET (duplicate request)" if result['is_duplicate'] else "SET"
+            return Response(success=True, data=f"{status} '{message.key}' = {message.value}")
         
         elif operation == "delete":
-            deleted = self.store.delete(message.key)
-            if deleted:
-                return Response(success=True, data=f"Deleted key '{message.key}'")
+            result = self.store.delete(message.key, request_id=message.request_id)
+            if result['success']:
+                status = "DELETE (duplicate request)" if result['is_duplicate'] else "DELETE"
+                return Response(success=True, data=f"{status} key '{message.key}'")
             else:
                 return Response(success=False, error=f"Key '{message.key}' not found")
         
