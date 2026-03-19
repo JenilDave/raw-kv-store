@@ -53,6 +53,20 @@ uv run main.py server --host localhost --port 5000
 
 The server will start listening on `localhost:5000` and accept client connections.
 
+### Running Multiple Servers (with Separate Storage)
+
+To run multiple independent server instances, each with its own storage file:
+
+```bash
+# Terminal 1: Server on port 5000
+uv run main.py server --host localhost --port 5000 --storage data/server_5000.jsonl
+
+# Terminal 2: Server on port 5001 (separate storage)
+uv run main.py server --host localhost --port 5001 --storage data/server_5001.jsonl
+```
+
+Each server maintains its own key-value store in separate JSON Lines files, allowing independent data replication testing.
+
 ### Running the Client (Example)
 
 ```bash
