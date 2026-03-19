@@ -53,19 +53,38 @@ uv run main.py server --host localhost --port 5000
 
 The server will start listening on `localhost:5000` and accept client connections.
 
-### Running Multiple Servers (with Separate Storage)
+### Running Multiple Servers (Primary-Replica Replication)
 
-To run multiple independent server instances, each with its own storage file:
+To set up primary-replica synchronous replication:
 
 ```bash
-# Terminal 1: Server on port 5000
-uv run main.py server --host localhost --port 5000 --storage data/server_5000.jsonl
+# Terminal 1: Replica server on port 5000
+uv run main.py server --host localhost --port 5000 --storage data/server_5000.jsonl --server-mode replica
 
-# Terminal 2: Server on port 5001 (separate storage)
-uv run main.py server --host localhost --port 5001 --storage data/server_5001.jsonl
+# Terminal 2: Primary server on port 5001
+uv run main.py server --host localhost --port 5001 --storage data/server_5001.jsonl --server-mode primary --replica-host localhost --replica-port 5000
 ```
 
-Each server maintains its own key-value store in separate JSON Lines files, allowing independent data replication testing.
+In this setup:
+- **Primary (5001)**: Accepts client requests for GET, SET, and DELETE operations
+- **Replica (5000)**: Receives synchronous replication of SET and DELETE operations
+- **Guarantees**: Primary only acknowledges writes to the client if the replica confirms success
+- **GET Operations**: Always served locally from the primary
+- **Failure Handling**: If replica is unreachable, primary write operations fail
+
+### Running Independent Servers (Standalone Mode)
+
+To run multiple independent server instances (no replication):
+
+```bash
+# Terminal 1: Server on port 5000 (standalone)
+uv run main.py server --host localhost --port 5000 --storage data/server_5000.jsonl --server-mode standalone
+
+# Terminal 2: Server on port 5001 (standalone)
+uv run main.py server --host localhost --port 5001 --storage data/server_5001.jsonl --server-mode standalone
+```
+
+Each server maintains completely independent data stores with no synchronization.
 
 ### Running the Client (Example)
 
@@ -91,6 +110,27 @@ with KVStoreClient(host='localhost', port=5000) as client:
     result = client.get('key1')
     print(result)  # Output: value1
 ```
+
+### Testing Primary-Replica Replication
+
+To test the primary-replica replication in action:
+
+```bash
+# Terminal 1: Start replica on port 5000
+uv run main.py server --host localhost --port 5000 --storage data/server_5000.jsonl --server-mode replica
+
+# Terminal 2: Start primary on port 5001
+uv run main.py server --host localhost --port 5001 --storage data/server_5001.jsonl --server-mode primary --replica-host localhost --replica-port 5000
+
+# Terminal 3: Run the test client
+uv run test_cross_server.py
+```
+
+The test will:
+1. Write data to the primary (port 5001)
+2. Verify the data is replicated to the replica (port 5000)
+3. Demonstrate that writes only succeed if the replica confirms
+4. Show failure scenarios if the replica is unavailable
 
 ## Logging
 

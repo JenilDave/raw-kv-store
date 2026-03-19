@@ -15,12 +15,16 @@ logger = None  # Will be initialized when server starts
 class KVStoreServer:
     """TCP socket-based key-value store server."""
     
-    def __init__(self, host: str = "localhost", port: int = 5000, storage_file: str = "data/kv_store.jsonl"):
+    def __init__(self, host: str = "localhost", port: int = 5000, storage_file: str = "data/kv_store.jsonl",
+                 mode: str = "standalone", replica_host: str = None, replica_port: int = None):
         self.host = host
         self.port = port
         self.store = KVStore(storage_file=storage_file)
         self.socket: Optional[socket.socket] = None
         self.running = False
+        self.mode = mode  # "primary", "replica", or "standalone"
+        self.replica_host = replica_host
+        self.replica_port = replica_port
     
     def start(self) -> None:
         """Start the server and listen for connections."""
@@ -38,6 +42,9 @@ class KVStoreServer:
             self.socket.settimeout(1.0)  # Allow Ctrl+C to interrupt accept()
             self.running = True
             logger.info(f"KV Store server listening on {self.host}:{self.port}")
+            logger.info(f"Mode: {self.mode}")
+            if self.mode == "primary" and self.replica_host:
+                logger.info(f"Replica server: {self.replica_host}:{self.replica_port}")
             
             while self.running:
                 try:
@@ -110,6 +117,7 @@ class KVStoreServer:
         operation = message.operation.lower()
         
         if operation == "get":
+            # GET is always local, no replication needed
             value = self.store.get(message.key)
             if value is not None:
                 return Response(success=True, data=value)
@@ -119,11 +127,28 @@ class KVStoreServer:
         elif operation == "set":
             if message.value is None:
                 return Response(success=False, error="Value is required for SET operation")
+            
+            # If primary, sync to replica first
+            if self.mode == "primary" and self.replica_host:
+                replica_response = self._sync_to_replica(message)
+                if not replica_response or not replica_response.success:
+                    error_msg = replica_response.error if replica_response else "Replica sync failed"
+                    return Response(success=False, error=f"Replica rejected SET: {error_msg}")
+            
+            # Process locally (idempotent with request_id)
             result = self.store.set(message.key, message.value, request_id=message.request_id)
             status = "SET (duplicate request)" if result['is_duplicate'] else "SET"
             return Response(success=True, data=f"{status} '{message.key}' = {message.value}")
         
         elif operation == "delete":
+            # If primary, sync to replica first
+            if self.mode == "primary" and self.replica_host:
+                replica_response = self._sync_to_replica(message)
+                if not replica_response or not replica_response.success:
+                    error_msg = replica_response.error if replica_response else "Replica sync failed"
+                    return Response(success=False, error=f"Replica rejected DELETE: {error_msg}")
+            
+            # Process locally (idempotent with request_id)
             result = self.store.delete(message.key, request_id=message.request_id)
             if result['success']:
                 status = "DELETE (duplicate request)" if result['is_duplicate'] else "DELETE"
@@ -133,6 +158,40 @@ class KVStoreServer:
         
         else:
             return Response(success=False, error=f"Unknown operation: {operation}")
+    
+    def _sync_to_replica(self, message: Message) -> Optional[Response]:
+        """Send operation to replica and get response."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as replica_socket:
+                replica_socket.settimeout(5.0)
+                replica_socket.connect((self.replica_host, self.replica_port))
+                
+                # Send message to replica
+                message_bytes = message.to_bytes()
+                message_length = len(message_bytes).to_bytes(4, byteorder='big')
+                replica_socket.send(message_length + message_bytes)
+                
+                # Receive response from replica
+                response_length_bytes = replica_socket.recv(4)
+                if not response_length_bytes:
+                    logger.error(f"No response length from replica")
+                    return None
+                
+                response_length = int.from_bytes(response_length_bytes, byteorder='big')
+                response_data = b''
+                while len(response_data) < response_length:
+                    chunk = replica_socket.recv(min(4096, response_length - len(response_data)))
+                    if not chunk:
+                        break
+                    response_data += chunk
+                
+                response = Response.from_bytes(response_data)
+                logger.info(f"Replica response for {message.operation}: {response.success}")
+                return response
+                
+        except Exception as e:
+            logger.error(f"Failed to sync with replica: {e}")
+            return None
     
     def stop(self) -> None:
         """Stop the server."""
