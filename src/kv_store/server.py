@@ -128,28 +128,30 @@ class KVStoreServer:
             if message.value is None:
                 return Response(success=False, error="Value is required for SET operation")
             
-            # If primary, sync to replica first
+            # Process locally first (idempotent with request_id)
+            result = self.store.set(message.key, message.value, request_id=message.request_id)
+            status = "SET (duplicate request)" if result['is_duplicate'] else "SET"
+            
+            # Then sync to replica if primary
             if self.mode == "primary" and self.replica_host:
                 replica_response = self._sync_to_replica(message)
                 if not replica_response or not replica_response.success:
                     error_msg = replica_response.error if replica_response else "Replica sync failed"
                     return Response(success=False, error=f"Replica rejected SET: {error_msg}")
             
-            # Process locally (idempotent with request_id)
-            result = self.store.set(message.key, message.value, request_id=message.request_id)
-            status = "SET (duplicate request)" if result['is_duplicate'] else "SET"
             return Response(success=True, data=f"{status} '{message.key}' = {message.value}")
         
         elif operation == "delete":
-            # If primary, sync to replica first
+            # Process locally first (idempotent with request_id)
+            result = self.store.delete(message.key, request_id=message.request_id)
+            
+            # Then sync to replica if primary
             if self.mode == "primary" and self.replica_host:
                 replica_response = self._sync_to_replica(message)
                 if not replica_response or not replica_response.success:
                     error_msg = replica_response.error if replica_response else "Replica sync failed"
                     return Response(success=False, error=f"Replica rejected DELETE: {error_msg}")
             
-            # Process locally (idempotent with request_id)
-            result = self.store.delete(message.key, request_id=message.request_id)
             if result['success']:
                 status = "DELETE (duplicate request)" if result['is_duplicate'] else "DELETE"
                 return Response(success=True, data=f"{status} key '{message.key}'")
