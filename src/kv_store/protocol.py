@@ -13,6 +13,7 @@ class Message:
     key: str
     value: Any = None
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    internal: bool = False  # True if this is an internal replication message
     
     def to_bytes(self) -> bytes:
         """Serialize message to bytes."""
@@ -21,6 +22,7 @@ class Message:
             "key": self.key,
             "value": self.value,
             "request_id": self.request_id,
+            "internal": self.internal,
         }
         return msgpack.packb(data)
     
@@ -33,6 +35,7 @@ class Message:
             key=decoded["key"],
             value=decoded.get("value"),
             request_id=decoded.get("request_id", str(uuid.uuid4())),
+            internal=decoded.get("internal", False),
         )
 
 

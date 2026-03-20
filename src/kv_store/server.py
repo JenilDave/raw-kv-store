@@ -96,6 +96,8 @@ class KVStoreServer:
                 # Parse and process the message
                 try:
                     message = Message.from_bytes(message_data)
+                    # Force internal flag to False - only server can set it to True
+                    message.internal = False
                     response = self._process_message(message)
                 except Exception as e:
                     logger.error(f"Error processing message: {e}")
@@ -125,6 +127,10 @@ class KVStoreServer:
                 return Response(success=False, error=f"Key '{message.key}' not found")
         
         elif operation == "set":
+            # Reject direct writes on replica servers (unless it's an internal replication message)
+            if self.mode == "replica" and not message.internal:
+                return Response(success=False, error="Replica server rejects direct writes. Write to primary server instead.")
+            
             if message.value is None:
                 return Response(success=False, error="Value is required for SET operation")
             
@@ -142,6 +148,10 @@ class KVStoreServer:
             return Response(success=True, data=f"{status} '{message.key}' = {message.value}")
         
         elif operation == "delete":
+            # Reject direct writes on replica servers (unless it's an internal replication message)
+            if self.mode == "replica" and not message.internal:
+                return Response(success=False, error="Replica server rejects direct writes. Write to primary server instead.")
+            
             # Process locally first (idempotent with request_id)
             result = self.store.delete(message.key, request_id=message.request_id)
             
@@ -167,6 +177,9 @@ class KVStoreServer:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as replica_socket:
                 replica_socket.settimeout(5.0)
                 replica_socket.connect((self.replica_host, self.replica_port))
+                
+                # Mark message as internal replication message
+                message.internal = True
                 
                 # Send message to replica
                 message_bytes = message.to_bytes()
