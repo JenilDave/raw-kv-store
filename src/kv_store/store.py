@@ -33,16 +33,32 @@ class KVStore:
         
         # Create directory if it doesn't exist
         self.storage_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Load existing data from file
-        self._load_from_file()
     
-    def _load_from_file(self) -> None:
+    def get_entries_from_log_sequence_number(self, start_lsn: int) -> list:
+        """Get log entries from persistent file starting from a specific log sequence number."""
+        logs = []
+        with open(self.storage_file, 'r') as f:
+            for line in f:
+                if line.strip():
+                    record = json.loads(line)
+                    operation = record.get('op')
+                    key = record.get('key')
+                    value = record.get('value')
+                    request_id = record.get('request_id')
+                    log_sequence_number = record.get('log_sequence_number', 0)
+                    
+                    if log_sequence_number > start_lsn:
+                        logs.append(record)
+                    
+        return logs
+
+    def _load_from_file(self) -> int:
         """Load data from persistent storage file into memory."""
         if not self.storage_file.exists():
             return
         
         try:
+            log_sequence_number=0
             with open(self.storage_file, 'r') as f:
                 for line in f:
                     if line.strip():
@@ -51,6 +67,7 @@ class KVStore:
                         key = record.get('key')
                         value = record.get('value')
                         request_id = record.get('request_id')
+                        log_sequence_number = max(log_sequence_number, record.get('log_sequence_number', 0))
                         
                         # Track processed request IDs for idempotency
                         if request_id:
@@ -62,14 +79,17 @@ class KVStore:
                             self._data.pop(key, None)
         except Exception as e:
             raise RuntimeError(f"Failed to load data from {self.storage_file}: {e}")
+        
+        return log_sequence_number
     
-    def _persist_to_file(self, operation: str, key: str, request_id: str, value: Any = None) -> None:
+    def _persist_to_file(self, operation: str, key: str, request_id: str, log_sequence_number: int, value: Any = None) -> None:
         """Append operation record to persistent storage file (write-optimized).
         
         Args:
             operation: 'set' or 'delete'
             key: The key being operated on
             request_id: Unique request ID for idempotency
+            log_sequence_number: The log sequence number for the operation
             value: The value (for 'set' operations)
         """
         try:
@@ -77,7 +97,8 @@ class KVStore:
                 'op': operation,
                 'key': key,
                 'value': value,
-                'request_id': request_id
+                'request_id': request_id,
+                'log_sequence_number': log_sequence_number
             }
             with open(self.storage_file, 'a') as f:
                 f.write(json.dumps(record) + '\n')
@@ -130,12 +151,13 @@ class KVStore:
         with self._lock:
             return self._data.get(key)
     
-    def set(self, key: str, value: Any, request_id: str = None) -> dict:
+    def set(self, key: str, value: Any, log_sequence_number: int, request_id: str = None) -> dict:
         """Set value for key in both in-memory store and persistent file.
         
         Args:
             key: The key to set
             value: The value to set
+            log_sequence_number: The log sequence number for the operation
             request_id: Unique request ID for idempotency
             
         Returns:
@@ -149,7 +171,7 @@ class KVStore:
             self._data[key] = value
             if request_id:
                 self._processed_requests.add(request_id)
-            self._persist_to_file('set', key, request_id or '', value)
+            self._persist_to_file('set', key, request_id or '', log_sequence_number, value)
             
             return {'is_duplicate': False, 'current_value': value}
     
@@ -160,11 +182,12 @@ class KVStore:
         with self._lock:
             return list(self._data.keys())
     
-    def delete(self, key: str, request_id: str = None) -> dict:
+    def delete(self, key: str, log_sequence_number: int, request_id: str = None) -> dict:
         """Delete key from store.
         
         Args:
             key: The key to delete
+            log_sequence_number: The log sequence number for the operation
             request_id: Unique request ID for idempotency
             
         Returns:
@@ -180,11 +203,11 @@ class KVStore:
                 del self._data[key]
                 if request_id:
                     self._processed_requests.add(request_id)
-                self._persist_to_file('delete', key, request_id or '')
+                self._persist_to_file('delete', key, request_id or '', log_sequence_number)
             
             return {'success': deleted, 'is_duplicate': False}
     
-    def clear(self) -> None:
+    def clear(self, log_sequence_number: int) -> None:
         """Clear all data from store.
         Idempotent: Clearing empty store has same effect as clearing full store.
         """
@@ -193,4 +216,4 @@ class KVStore:
             self._data.clear()
             self._processed_requests.clear()
             for key in keys_to_delete:
-                self._persist_to_file('delete', key, '')
+                self._persist_to_file('delete', key, '', log_sequence_number)

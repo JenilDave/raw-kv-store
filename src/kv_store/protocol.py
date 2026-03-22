@@ -13,6 +13,7 @@ class Message:
     key: str
     value: Any = None
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    log_sequence_number: int = 0  # Log sequence number for ordering
     internal: bool = False  # True if this is an internal replication message
     
     def to_bytes(self) -> bytes:
@@ -23,6 +24,7 @@ class Message:
             "value": self.value,
             "request_id": self.request_id,
             "internal": self.internal,
+            "log_sequence_number": self.log_sequence_number,
         }
         return msgpack.packb(data)
     

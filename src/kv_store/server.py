@@ -2,6 +2,7 @@
 
 import socket
 import threading
+import traceback
 from typing import Optional
 
 from src.kv_store.store import KVStore
@@ -20,6 +21,7 @@ class KVStoreServer:
         self.host = host
         self.port = port
         self.store = KVStore(storage_file=storage_file)
+        self.log_sequence_number = self.store._load_from_file()
         self.socket: Optional[socket.socket] = None
         self.running = False
         self.mode = mode  # "primary", "replica", or "standalone"
@@ -46,6 +48,7 @@ class KVStoreServer:
             if self.mode == "primary" and self.replica_host:
                 logger.info(f"Replica server: {self.replica_host}:{self.replica_port}")
             
+            self._sync_log_sequence_with_replica()
             while self.running:
                 try:
                     client_socket, client_addr = self.socket.accept()
@@ -68,6 +71,7 @@ class KVStoreServer:
                     
         except Exception as e:
             logger.error(f"Server error: {e}")
+            logger.error(traceback.format_exc())
         finally:
             self.stop()
     
@@ -97,7 +101,6 @@ class KVStoreServer:
                 try:
                     message = Message.from_bytes(message_data)
                     # Force internal flag to False - only server can set it to True
-                    message.internal = False
                     response = self._process_message(message)
                 except Exception as e:
                     logger.error(f"Error processing message: {e}")
@@ -135,7 +138,8 @@ class KVStoreServer:
                 return Response(success=False, error="Value is required for SET operation")
             
             # Process locally first (idempotent with request_id)
-            result = self.store.set(message.key, message.value, request_id=message.request_id)
+            self.log_sequence_number += 1
+            result = self.store.set(message.key, message.value, request_id=message.request_id, log_sequence_number=self.log_sequence_number)
             status = "SET (duplicate request)" if result['is_duplicate'] else "SET"
             
             # Then sync to replica if primary
@@ -153,7 +157,8 @@ class KVStoreServer:
                 return Response(success=False, error="Replica server rejects direct writes. Write to primary server instead.")
             
             # Process locally first (idempotent with request_id)
-            result = self.store.delete(message.key, request_id=message.request_id)
+            self.log_sequence_number += 1
+            result = self.store.delete(message.key, request_id=message.request_id, log_sequence_number=self.log_sequence_number)
             
             # Then sync to replica if primary
             if self.mode == "primary" and self.replica_host:
@@ -168,6 +173,11 @@ class KVStoreServer:
             else:
                 return Response(success=False, error=f"Key '{message.key}' not found")
         
+        elif operation == "get_lsn" and message.internal:
+            # Special internal operation to get latest log sequence number for replication ordering
+            lsn = self._get_latest_log_sequence_number()
+            return Response(success=True, data=lsn)
+
         else:
             return Response(success=False, error=f"Unknown operation: {operation}")
     
@@ -208,6 +218,80 @@ class KVStoreServer:
             logger.error(f"Failed to sync with replica: {e}")
             return None
     
+    def _sync_log_sequence_with_replica(self) -> None:
+        """Sync log sequence number with replica for ordering."""
+
+        if self.mode != "primary" or not self.replica_host:
+            return
+
+        replica_lsn = self._get_latest_log_sequence_number_from_replica()
+        primary_lsn = self._get_latest_log_sequence_number()
+
+        if primary_lsn > replica_lsn:
+            logger.info(f"Primary LSN ({primary_lsn}) is ahead of replica LSN ({replica_lsn}). Syncing logs...")
+            logs_to_sync = self.store.get_entries_from_log_sequence_number(replica_lsn)
+            print(f"Found {len(logs_to_sync)} logs to sync to replica")
+            for log_entry in logs_to_sync:
+                # Create a Message from log entry and sync to replica
+                message = Message(
+                    operation=log_entry["op"],
+                    key=log_entry["key"],
+                    value=log_entry.get("value"),
+                    request_id=log_entry.get("request_id"),
+                    internal=True,
+                    log_sequence_number=log_entry.get("log_sequence_number")
+                )
+                self._sync_to_replica(message)
+
+        elif primary_lsn < replica_lsn:
+            logger.error(f"Primary LSN ({primary_lsn}) is behind replica LSN ({replica_lsn}). This should not happen in normal operation.")
+            raise RuntimeError("Primary LSN is behind replica LSN. Manual intervention needed.")
+
+        return
+
+    def _get_latest_log_sequence_number_from_replica(self) -> Optional[int]:
+        """Get the latest log sequence number from the replica."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as replica_socket:
+            try:
+                replica_socket.settimeout(5.0)
+                replica_socket.connect((self.replica_host, self.replica_port))
+                
+                # Send a special message to get the latest log sequence number
+                message = Message(operation="get_lsn", key="", internal=True)
+                message_bytes = message.to_bytes()
+                message_length = len(message_bytes).to_bytes(4, byteorder='big')
+                replica_socket.send(message_length + message_bytes)
+                
+                # Receive response from replica
+                response_length_bytes = replica_socket.recv(4)
+                if not response_length_bytes:
+                    logger.error(f"No response length from replica for LSN request")
+                    return None
+                
+                response_length = int.from_bytes(response_length_bytes, byteorder='big')
+                response_data = b''
+                while len(response_data) < response_length:
+                    chunk = replica_socket.recv(min(4096, response_length - len(response_data)))
+                    if not chunk:
+                        break
+                    response_data += chunk
+                
+                response = Response.from_bytes(response_data)
+                if response.success and isinstance(response.data, int):
+                    logger.info(f"Replica latest log sequence number: {response.data}")
+                    return response.data
+                else:
+                    logger.error(f"Invalid LSN response from replica: {response.error}")
+                    return None
+            
+            except Exception as e:
+                logger.error(f"Failed to get LSN from replica: {e}")
+        return None
+
+    def _get_latest_log_sequence_number(self) -> int:
+        """Get the latest log sequence number from the store."""
+        return self.log_sequence_number
+
     def stop(self) -> None:
         """Stop the server."""
         self.running = False
