@@ -27,6 +27,8 @@ class KVStoreServer:
         self.mode = mode  # "primary", "replica", or "standalone"
         self.replica_host = replica_host
         self.replica_port = replica_port
+        self.primary_host = replica_host  # For replica servers, this points to the primary server
+        self.primary_port = replica_port
     
     def start(self) -> None:
         """Start the server and listen for connections."""
@@ -49,6 +51,7 @@ class KVStoreServer:
                 logger.info(f"Replica server: {self.replica_host}:{self.replica_port}")
             
             self._sync_log_sequence_with_replica()
+            self._request_primary_to_sync(Message(operation="sync_request", key="", internal=True))
             while self.running:
                 try:
                     client_socket, client_addr = self.socket.accept()
@@ -137,8 +140,12 @@ class KVStoreServer:
             if message.value is None:
                 return Response(success=False, error="Value is required for SET operation")
             
+            if message.log_sequence_number:
+                self.log_sequence_number = message.log_sequence_number
+            else:
+                self.log_sequence_number += 1
+
             # Process locally first (idempotent with request_id)
-            self.log_sequence_number += 1
             result = self.store.set(message.key, message.value, request_id=message.request_id, log_sequence_number=self.log_sequence_number)
             status = "SET (duplicate request)" if result['is_duplicate'] else "SET"
             
@@ -156,8 +163,12 @@ class KVStoreServer:
             if self.mode == "replica" and not message.internal:
                 return Response(success=False, error="Replica server rejects direct writes. Write to primary server instead.")
             
+            if message.log_sequence_number:
+                self.log_sequence_number = message.log_sequence_number
+            else:
+                self.log_sequence_number += 1
+
             # Process locally first (idempotent with request_id)
-            self.log_sequence_number += 1
             result = self.store.delete(message.key, request_id=message.request_id, log_sequence_number=self.log_sequence_number)
             
             # Then sync to replica if primary
@@ -178,8 +189,11 @@ class KVStoreServer:
             lsn = self._get_latest_log_sequence_number()
             return Response(success=True, data=lsn)
 
-        else:
-            return Response(success=False, error=f"Unknown operation: {operation}")
+        elif operation == "sync_request" and message.internal:
+            if self.mode == "primary":
+                # Primary receives sync request from replica - send all logs after replica's LSN
+                threading.Thread(target=self._sync_log_sequence_with_replica).start()
+                return Response(success=True, data="Primary log sequence synced with replica")
     
     def _sync_to_replica(self, message: Message) -> Optional[Response]:
         """Send operation to replica and get response."""
@@ -225,6 +239,11 @@ class KVStoreServer:
             return
 
         replica_lsn = self._get_latest_log_sequence_number_from_replica()
+
+        if replica_lsn < 0:
+            logger.error("Unable to connect replica server. Failed to get replica LSN.")
+            return
+
         primary_lsn = self._get_latest_log_sequence_number()
 
         if primary_lsn > replica_lsn:
@@ -266,7 +285,7 @@ class KVStoreServer:
                 response_length_bytes = replica_socket.recv(4)
                 if not response_length_bytes:
                     logger.error(f"No response length from replica for LSN request")
-                    return None
+                    return 0
                 
                 response_length = int.from_bytes(response_length_bytes, byteorder='big')
                 response_data = b''
@@ -282,15 +301,56 @@ class KVStoreServer:
                     return response.data
                 else:
                     logger.error(f"Invalid LSN response from replica: {response.error}")
-                    return None
+                    return 0
             
             except Exception as e:
                 logger.error(f"Failed to get LSN from replica: {e}")
-        return None
+        return -1
 
     def _get_latest_log_sequence_number(self) -> int:
         """Get the latest log sequence number from the store."""
         return self.log_sequence_number
+    
+    def _request_primary_to_sync(self, message: Message) -> Optional[Response]:
+        """Request primary server to sync a log entry to replica."""
+
+        if self.mode != "replica" or not self.primary_host:
+            return None
+
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as primary_socket:
+                primary_socket.settimeout(5.0)
+                primary_socket.connect((self.primary_host, self.primary_port))
+                
+                # Mark message as internal replication message
+                message.internal = True
+                
+                # Send message to primary
+                message_bytes = message.to_bytes()
+                message_length = len(message_bytes).to_bytes(4, byteorder='big')
+                primary_socket.send(message_length + message_bytes)
+                
+                # Receive response from primary
+                response_length_bytes = primary_socket.recv(4)
+                if not response_length_bytes:
+                    logger.error(f"No response length from primary")
+                    return None
+                
+                response_length = int.from_bytes(response_length_bytes, byteorder='big')
+                response_data = b''
+                while len(response_data) < response_length:
+                    chunk = primary_socket.recv(min(4096, response_length - len(response_data)))
+                    if not chunk:
+                        break
+                    response_data += chunk
+                
+                response = Response.from_bytes(response_data)
+                logger.info(f"Primary response for sync request: {response.success}")
+                return response
+                
+        except Exception as e:
+            logger.error(f"Failed to request sync from primary: {e}")
+            return None
 
     def stop(self) -> None:
         """Stop the server."""

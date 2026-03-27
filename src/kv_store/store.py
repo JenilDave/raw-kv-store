@@ -55,7 +55,7 @@ class KVStore:
     def _load_from_file(self) -> int:
         """Load data from persistent storage file into memory."""
         if not self.storage_file.exists():
-            return
+            return 0  # No existing data, start with log sequence number 0
         
         try:
             log_sequence_number=0
