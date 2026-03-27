@@ -59,7 +59,7 @@ To set up primary-replica synchronous replication:
 
 ```bash
 # Terminal 1: Replica server on port 5000
-uv run main.py server --host localhost --port 5000 --storage data/server_5000.jsonl --server-mode replica
+uv run main.py server --host localhost --port 5000 --storage data/server_5000.jsonl --server-mode replica --replica-host localhost --replica-port 5001
 
 # Terminal 2: Primary server on port 5001
 uv run main.py server --host localhost --port 5001 --storage data/server_5001.jsonl --server-mode primary --replica-host localhost --replica-port 5000
