@@ -77,6 +77,15 @@ class KVStoreServer:
             logger.error(traceback.format_exc())
         finally:
             self.stop()
+
+    def recv_exactly(self, sock, n):
+        data = b''
+        while len(data) < n:
+            chunk = sock.recv(n - len(data))
+            if not chunk:
+                raise ConnectionError("Connection closed")
+            data += chunk
+        return data
     
     def _handle_client(self, client_socket: socket.socket, client_addr: tuple) -> None:
         """Handle a single client connection."""
@@ -282,7 +291,7 @@ class KVStoreServer:
                 replica_socket.send(message_length + message_bytes)
                 
                 # Receive response from replica
-                response_length_bytes = replica_socket.recv(4)
+                response_length_bytes = self.recv_exactly(replica_socket, 4)
                 if not response_length_bytes:
                     logger.error(f"No response length from replica for LSN request")
                     return 0
@@ -290,7 +299,7 @@ class KVStoreServer:
                 response_length = int.from_bytes(response_length_bytes, byteorder='big')
                 response_data = b''
                 while len(response_data) < response_length:
-                    chunk = replica_socket.recv(min(4096, response_length - len(response_data)))
+                    chunk = self.recv_exactly(replica_socket, min(4096, response_length - len(response_data)))
                     if not chunk:
                         break
                     response_data += chunk
@@ -331,7 +340,7 @@ class KVStoreServer:
                 primary_socket.send(message_length + message_bytes)
                 
                 # Receive response from primary
-                response_length_bytes = primary_socket.recv(4)
+                response_length_bytes = self.recv_exactly(primary_socket, 4)
                 if not response_length_bytes:
                     logger.error(f"No response length from primary")
                     return None
@@ -339,7 +348,7 @@ class KVStoreServer:
                 response_length = int.from_bytes(response_length_bytes, byteorder='big')
                 response_data = b''
                 while len(response_data) < response_length:
-                    chunk = primary_socket.recv(min(4096, response_length - len(response_data)))
+                    chunk = self.recv_exactly(primary_socket, min(4096, response_length - len(response_data)))
                     if not chunk:
                         break
                     response_data += chunk
