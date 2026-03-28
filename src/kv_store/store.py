@@ -166,7 +166,7 @@ class KVStore:
         """
         with self._lock:
 
-            if log_sequence_number:
+            if log_sequence_number is not None:
                 self._log_sequence_number = log_sequence_number
             else:
                 self._log_sequence_number += 1
@@ -205,7 +205,7 @@ class KVStore:
                 # This is a duplicate request - return idempotent response
                 return {'success': key in self._data or key not in self._data, 'is_duplicate': True}
             
-            if log_sequence_number:
+            if log_sequence_number is not None:
                 self._log_sequence_number = log_sequence_number
             else:
                 self._log_sequence_number += 1
@@ -225,7 +225,7 @@ class KVStore:
         """
         with self._lock:
 
-            if log_sequence_number:
+            if log_sequence_number is not None:
                 self._log_sequence_number = log_sequence_number
             else:
                 self._log_sequence_number += 1
