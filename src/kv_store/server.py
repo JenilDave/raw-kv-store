@@ -309,7 +309,7 @@ class KVStoreServer:
 
     def _get_latest_log_sequence_number(self) -> int:
         """Get the latest log sequence number from the store."""
-        return self.log_sequence_number
+        return self.store.get_latest_log_sequence_number()
     
     def _request_primary_to_sync(self, message: Message) -> Optional[Response]:
         """Request primary server to sync a log entry to replica."""
