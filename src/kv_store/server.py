@@ -21,7 +21,8 @@ class KVStoreServer:
         self.host = host
         self.port = port
         self.store = KVStore(storage_file=storage_file)
-        self.log_sequence_number = self.store._load_from_file()
+        self.store._load_from_file()
+        self.log_sequence_number = self.store.get_latest_log_sequence_number()  # Relevant for Primary only. Replica will sync this from Primary.
         self.socket: Optional[socket.socket] = None
         self.running = False
         self.mode = mode  # "primary", "replica", or "standalone"
@@ -148,15 +149,11 @@ class KVStoreServer:
             
             if message.value is None:
                 return Response(success=False, error="Value is required for SET operation")
-            
-            if message.log_sequence_number:
-                self.log_sequence_number = message.log_sequence_number
-            else:
-                self.log_sequence_number += 1
 
             # Process locally first (idempotent with request_id)
-            result = self.store.set(message.key, message.value, request_id=message.request_id, log_sequence_number=self.log_sequence_number)
+            result = self.store.set(message.key, message.value, request_id=message.request_id, log_sequence_number=message.log_sequence_number)
             status = "SET (duplicate request)" if result['is_duplicate'] else "SET"
+            message.log_sequence_number = result.get('log_sequence_number', self.log_sequence_number)
             
             # Then sync to replica if primary
             if self.mode == "primary" and self.replica_host:
@@ -171,15 +168,11 @@ class KVStoreServer:
             # Reject direct writes on replica servers (unless it's an internal replication message)
             if self.mode == "replica" and not message.internal:
                 return Response(success=False, error="Replica server rejects direct writes. Write to primary server instead.")
-            
-            if message.log_sequence_number:
-                self.log_sequence_number = message.log_sequence_number
-            else:
-                self.log_sequence_number += 1
 
             # Process locally first (idempotent with request_id)
-            result = self.store.delete(message.key, request_id=message.request_id, log_sequence_number=self.log_sequence_number)
-            
+            result = self.store.delete(message.key, request_id=message.request_id, log_sequence_number=message.log_sequence_number)
+            message.log_sequence_number = result.get('log_sequence_number', self.log_sequence_number)
+
             # Then sync to replica if primary
             if self.mode == "primary" and self.replica_host:
                 replica_response = self._sync_to_replica(message)

@@ -52,10 +52,11 @@ class KVStore:
                     
         return logs
 
-    def _load_from_file(self) -> int:
+    def _load_from_file(self) -> None:
         """Load data from persistent storage file into memory."""
         if not self.storage_file.exists():
-            return 0  # No existing data, start with log sequence number 0
+            self._log_sequence_number = 0
+            return
         
         try:
             log_sequence_number=0
@@ -80,8 +81,8 @@ class KVStore:
         except Exception as e:
             raise RuntimeError(f"Failed to load data from {self.storage_file}: {e}")
         
-        return log_sequence_number
-    
+        self._log_sequence_number = log_sequence_number
+
     def _persist_to_file(self, operation: str, key: str, request_id: str, log_sequence_number: int, value: Any = None) -> None:
         """Append operation record to persistent storage file (write-optimized).
         
@@ -164,6 +165,12 @@ class KVStore:
             Dict with 'is_duplicate' flag and optional cached response
         """
         with self._lock:
+
+            if log_sequence_number:
+                self._log_sequence_number = log_sequence_number
+            else:
+                self._log_sequence_number += 1
+
             if request_id and request_id in self._processed_requests:
                 # This is a duplicate request - return idempotent response
                 return {'is_duplicate': True, 'current_value': self._data.get(key)}
@@ -171,9 +178,9 @@ class KVStore:
             self._data[key] = value
             if request_id:
                 self._processed_requests.add(request_id)
-            self._persist_to_file('set', key, request_id or '', log_sequence_number, value)
+            self._persist_to_file('set', key, request_id or '', self._log_sequence_number, value)
             
-            return {'is_duplicate': False, 'current_value': value}
+            return {'is_duplicate': False, 'current_value': value , 'log_sequence_number': self._log_sequence_number}
     
     def keys(self) -> list:
         """Get all keys in the store.
@@ -198,22 +205,40 @@ class KVStore:
                 # This is a duplicate request - return idempotent response
                 return {'success': key in self._data or key not in self._data, 'is_duplicate': True}
             
+            if log_sequence_number:
+                self._log_sequence_number = log_sequence_number
+            else:
+                self._log_sequence_number += 1
+
             deleted = key in self._data
             if deleted:
                 del self._data[key]
                 if request_id:
                     self._processed_requests.add(request_id)
-                self._persist_to_file('delete', key, request_id or '', log_sequence_number)
+                self._persist_to_file('delete', key, request_id or '', self._log_sequence_number)
             
-            return {'success': deleted, 'is_duplicate': False}
+            return {'success': deleted, 'is_duplicate': False, 'log_sequence_number': self._log_sequence_number}
     
     def clear(self, log_sequence_number: int) -> None:
         """Clear all data from store.
         Idempotent: Clearing empty store has same effect as clearing full store.
         """
         with self._lock:
+
+            if log_sequence_number:
+                self._log_sequence_number = log_sequence_number
+            else:
+                self._log_sequence_number += 1
+
             keys_to_delete = list(self._data.keys())
             self._data.clear()
             self._processed_requests.clear()
             for key in keys_to_delete:
-                self._persist_to_file('delete', key, '', log_sequence_number)
+                self._persist_to_file('delete', key, '', self._log_sequence_number)
+            
+            return {'log_sequence_number': self._log_sequence_number}
+
+    def get_latest_log_sequence_number(self) -> int:
+        """Get the latest log sequence number."""
+        with self._lock:
+            return self._log_sequence_number
