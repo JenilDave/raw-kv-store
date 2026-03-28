@@ -117,10 +117,10 @@ To test the primary-replica replication in action:
 
 ```bash
 # Terminal 1: Start replica on port 5000
-uv run main.py server --host localhost --port 5000 --storage data/server_5000.jsonl --server-mode replica
+uv run main.py server --host localhost --port 5000 --storage data/server_5000.jsonl --server-mode replica --peer-host localhost --peer-port 5001
 
 # Terminal 2: Start primary on port 5001
-uv run main.py server --host localhost --port 5001 --storage data/server_5001.jsonl --server-mode primary --replica-host localhost --replica-port 5000
+uv run main.py server --host localhost --port 5001 --storage data/server_5001.jsonl --server-mode primary --peer-host localhost --peer-port 5000
 
 # Terminal 3: Run the test client
 uv run test_cross_server.py
