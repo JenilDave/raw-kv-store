@@ -12,14 +12,14 @@ def main():
     parser.add_argument("--storage", default="data/kv_store.jsonl", help="Storage file path (default: data/kv_store.jsonl)")
     parser.add_argument("--server-mode", choices=["primary", "replica", "standalone"], default="standalone",
                         help="Server mode: primary (accepts writes, syncs to replica), replica (read-only), or standalone (independent)")
-    parser.add_argument("--replica-host", help="Replica server host (required if server-mode is 'primary')")
-    parser.add_argument("--replica-port", type=int, help="Replica server port (required if server-mode is 'primary')")
+    parser.add_argument("--peer-host", help="Peer server host (required if server-mode is 'primary')")
+    parser.add_argument("--peer-port", type=int, help="Peer server port (required if server-mode is 'primary')")
     
     args = parser.parse_args()
     
     if args.mode == "server":
         server = KVStoreServer(host=args.host, port=args.port, storage_file=args.storage,
-                              mode=args.server_mode, replica_host=args.replica_host, replica_port=args.replica_port)
+                              mode=args.server_mode, peer_host=args.peer_host, peer_port=args.peer_port)
         server.start()
     else:
         client_main()
