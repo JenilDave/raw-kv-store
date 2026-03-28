@@ -50,7 +50,14 @@ class KVStoreServer:
                 logger.info(f"Replica server: {self.peer_host}:{self.peer_port}")
             
             self._sync_log_sequence_with_replica()
-            self._request_primary_to_sync(Message(operation="sync_request", key="", internal=True))
+
+            if self.mode == "replica" and self.peer_host:
+                threading.Thread(
+                    target=self._request_primary_to_sync,
+                    args=(Message(operation="sync_request", key="", internal=True),),
+                    daemon=True
+                ).start()
+
             while self.running:
                 try:
                     client_socket, client_addr = self.socket.accept()
