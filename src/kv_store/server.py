@@ -17,7 +17,7 @@ class KVStoreServer:
     """TCP socket-based key-value store server."""
     
     def __init__(self, host: str = "localhost", port: int = 5000, storage_file: str = "data/kv_store.jsonl",
-                 mode: str = "standalone", replica_host: str = None, replica_port: int = None):
+                 mode: str = "standalone", peer_host: str = None, peer_port: int = None):
         self.host = host
         self.port = port
         self.store = KVStore(storage_file=storage_file)
@@ -26,10 +26,8 @@ class KVStoreServer:
         self.socket: Optional[socket.socket] = None
         self.running = False
         self.mode = mode  # "primary", "replica", or "standalone"
-        self.replica_host = replica_host
-        self.replica_port = replica_port
-        self.primary_host = replica_host  # For replica servers, this points to the primary server
-        self.primary_port = replica_port
+        self.peer_host = peer_host
+        self.peer_port = peer_port
     
     def start(self) -> None:
         """Start the server and listen for connections."""
@@ -48,8 +46,8 @@ class KVStoreServer:
             self.running = True
             logger.info(f"KV Store server listening on {self.host}:{self.port}")
             logger.info(f"Mode: {self.mode}")
-            if self.mode == "primary" and self.replica_host:
-                logger.info(f"Replica server: {self.replica_host}:{self.replica_port}")
+            if self.mode == "primary" and self.peer_host:
+                logger.info(f"Replica server: {self.peer_host}:{self.peer_port}")
             
             self._sync_log_sequence_with_replica()
             self._request_primary_to_sync(Message(operation="sync_request", key="", internal=True))
@@ -156,7 +154,7 @@ class KVStoreServer:
             message.log_sequence_number = result.get('log_sequence_number', self.log_sequence_number)
             
             # Then sync to replica if primary
-            if self.mode == "primary" and self.replica_host:
+            if self.mode == "primary" and self.peer_host:
                 replica_response = self._sync_to_replica(message)
                 if not replica_response or not replica_response.success:
                     error_msg = replica_response.error if replica_response else "Replica sync failed"
@@ -174,7 +172,7 @@ class KVStoreServer:
             message.log_sequence_number = result.get('log_sequence_number', self.log_sequence_number)
 
             # Then sync to replica if primary
-            if self.mode == "primary" and self.replica_host:
+            if self.mode == "primary" and self.peer_host:
                 replica_response = self._sync_to_replica(message)
                 if not replica_response or not replica_response.success:
                     error_msg = replica_response.error if replica_response else "Replica sync failed"
@@ -194,7 +192,7 @@ class KVStoreServer:
         elif operation == "sync_request" and message.internal:
             if self.mode == "primary":
                 # Primary receives sync request from replica - send all logs after replica's LSN
-                threading.Thread(target=self._sync_log_sequence_with_replica).start()
+                self._sync_log_sequence_with_replica()
                 return Response(success=True, data="Primary log sequence synced with replica")
     
     def _sync_to_replica(self, message: Message) -> Optional[Response]:
@@ -202,7 +200,7 @@ class KVStoreServer:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as replica_socket:
                 replica_socket.settimeout(5.0)
-                replica_socket.connect((self.replica_host, self.replica_port))
+                replica_socket.connect((self.peer_host, self.peer_port))
                 
                 # Mark message as internal replication message
                 message.internal = True
@@ -237,7 +235,7 @@ class KVStoreServer:
     def _sync_log_sequence_with_replica(self) -> None:
         """Sync log sequence number with replica for ordering."""
 
-        if self.mode != "primary" or not self.replica_host:
+        if self.mode != "primary" or not self.peer_host:
             return
 
         replica_lsn = self._get_latest_log_sequence_number_from_replica()
@@ -275,7 +273,7 @@ class KVStoreServer:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as replica_socket:
             try:
                 replica_socket.settimeout(5.0)
-                replica_socket.connect((self.replica_host, self.replica_port))
+                replica_socket.connect((self.peer_host, self.peer_port))
                 
                 # Send a special message to get the latest log sequence number
                 message = Message(operation="get_lsn", key="", internal=True)
@@ -316,13 +314,13 @@ class KVStoreServer:
     def _request_primary_to_sync(self, message: Message) -> Optional[Response]:
         """Request primary server to sync a log entry to replica."""
 
-        if self.mode != "replica" or not self.primary_host:
+        if self.mode != "replica" or not self.peer_host:
             return None
 
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as primary_socket:
                 primary_socket.settimeout(5.0)
-                primary_socket.connect((self.primary_host, self.primary_port))
+                primary_socket.connect((self.peer_host, self.peer_port))
                 
                 # Mark message as internal replication message
                 message.internal = True
