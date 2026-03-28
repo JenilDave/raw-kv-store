@@ -38,6 +38,7 @@ class Message:
             value=decoded.get("value"),
             request_id=decoded.get("request_id", str(uuid.uuid4())),
             internal=decoded.get("internal", False),
+            log_sequence_number=decoded.get("log_sequence_number", 0),
         )
 
 
