@@ -118,7 +118,6 @@ class KVStoreServer:
                 # Parse and process the message
                 try:
                     message = Message.from_bytes(message_data)
-                    # Force internal flag to False - only server can set it to True
                     response = self._process_message(message)
                 except Exception as e:
                     logger.error(f"Error processing message: {e}")

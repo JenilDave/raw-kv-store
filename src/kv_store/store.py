@@ -165,15 +165,14 @@ class KVStore:
             Dict with 'is_duplicate' flag and optional cached response
         """
         with self._lock:
+            if request_id and request_id in self._processed_requests:
+                # This is a duplicate request - return idempotent response
+                return {'is_duplicate': True, 'current_value': self._data.get(key)}
 
             if log_sequence_number is not None:
                 self._log_sequence_number = log_sequence_number
             else:
                 self._log_sequence_number += 1
-
-            if request_id and request_id in self._processed_requests:
-                # This is a duplicate request - return idempotent response
-                return {'is_duplicate': True, 'current_value': self._data.get(key)}
             
             self._data[key] = value
             if request_id:
