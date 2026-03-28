@@ -93,7 +93,7 @@ class KVStoreServer:
         try:
             while self.running:
                 # Receive message length first (4 bytes)
-                length_bytes = client_socket.recv(4)
+                length_bytes = self.recv_exactly(client_socket, 4)
                 if not length_bytes:
                     break
                 
@@ -102,7 +102,7 @@ class KVStoreServer:
                 # Receive the actual message
                 message_data = b''
                 while len(message_data) < message_length:
-                    chunk = client_socket.recv(min(4096, message_length - len(message_data)))
+                    chunk = self.recv_exactly(client_socket, min(4096, message_length - len(message_data)))
                     if not chunk:
                         break
                     message_data += chunk
@@ -213,7 +213,7 @@ class KVStoreServer:
                 replica_socket.send(message_length + message_bytes)
                 
                 # Receive response from replica
-                response_length_bytes = replica_socket.recv(4)
+                response_length_bytes = self.recv_exactly(replica_socket, 4)
                 if not response_length_bytes:
                     logger.error(f"No response length from replica")
                     return None
@@ -221,7 +221,7 @@ class KVStoreServer:
                 response_length = int.from_bytes(response_length_bytes, byteorder='big')
                 response_data = b''
                 while len(response_data) < response_length:
-                    chunk = replica_socket.recv(min(4096, response_length - len(response_data)))
+                    chunk = self.recv_exactly(replica_socket, min(4096, response_length - len(response_data)))
                     if not chunk:
                         break
                     response_data += chunk
